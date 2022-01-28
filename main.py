@@ -130,6 +130,12 @@ async def get_user(user_id: int):
     )
 
 
+@app.route("/logout", methods=["GET"])
+async def user_logout():
+    session.user_id = None
+    return json(True)
+
+
 @app.route("/login", methods=["POST"])
 async def user_login():
     try:
