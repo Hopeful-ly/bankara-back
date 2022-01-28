@@ -23,6 +23,7 @@ class Card(CardBase):
     def dict(self, *args, **kwargs):
         self_dict = super().dict(*args, **kwargs)
         self_dict["card_number"] = blur_text(str(self_dict["card_number"]), 4, 4)
+        return self_dict
 
     class Config:
         orm_mode = True
