@@ -1,6 +1,8 @@
 from typing import List, Optional
 from pydantic import BaseModel
 
+from utils import blur_text
+
 
 class CardBase(BaseModel):
     title: str
@@ -17,6 +19,10 @@ class CardCreate(CardBase):
 class Card(CardBase):
     id: int
     owner_id: int
+
+    def dict(self, *args, **kwargs):
+        self_dict = super().dict(*args, **kwargs)
+        self_dict["card_number"] = blur_text(str(self_dict["card_number"]), 4, 4)
 
     class Config:
         orm_mode = True

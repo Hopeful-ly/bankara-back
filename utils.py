@@ -12,6 +12,12 @@ def expect_type(any: Any, _type: type):
         raise Exception(f"Expected {_type}, got {any.__class__}")
 
 
+def blur_text(text, pre, suf):
+    if len(text) < pre + suf:
+        return text
+    return text[:pre] + "*" * (len(text) - pre - suf) + text[-suf:]
+
+
 def validate_req(pydantic_obj: BaseModel):
     try:
         pydantic_obj.validate(pydantic_obj)

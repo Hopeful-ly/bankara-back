@@ -3,17 +3,19 @@ from functools import wraps
 from hashlib import sha256
 import signal
 from typing import Any
+from async_timeout import sys
 from black import traceback
 from quart import Quart, current_app, request
 from quart_auth import LocalProxy, Unauthorized
 from db import crud, schemas, make_db
-from utils import json, register, validate_req
+from utils import blur_text, json, register, validate_req
 from settings import SECRET_KEY
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from quart_cors import cors
 from quart.utils import run_sync
 from session import Session, SessionStorage
+import re
 
 session: Session = LocalProxy(lambda: current_app.session())
 
@@ -44,10 +46,22 @@ config = Config()
 config.use_reloader = True
 config.bind = ["localhost:4000"]
 
+allowed_providers = [
+    "Mastercard",
+    "Visa",
+    "American Express",
+    "Bank Of America",
+    "Capital One",
+    "Chase",
+    "Citi",
+    "Discover",
+    "U.S. Bank",
+    "wells Fargo",
+]
+
 
 @app.route("/check", methods=["GET"])
 async def check_user():
-    print("user id!", session.user_id, session.last_use, session._session_id[:5])
     user_id = session.user_id
     assert user_id, "user is not logged in"
     user: schemas.User = crud.get_user(user_id)
@@ -68,18 +82,21 @@ async def create_user():
 
     if session.user_id:
         session.user_id = None
+    try:
+        user = schemas.UserCreate(**(await request.get_json()))
+    except Exception as e:
+        raise AssertionError(e)
+    assert user.password, "password is required"
+    assert user.email, "email is required"
+    assert user.name, "name is required"
+    assert re.match(r"[^@]+@[^@]+\.[^@]+", user.email), "email is invalid"
 
-    user = schemas.UserCreate(**(await request.get_json()))
-    error = validate_req(user)
-    if error:
-        raise AssertionError("error")
     already_user = crud.get_user_by_email(user.email)
-    assert not already_user, "used-email"
+    assert not already_user, "user with this email already exists"
 
     new_user: schemas.User = crud.create_user(user)
-    assert new_user, "error"
+
     session.user_id = new_user.id
-    print("logged user in: ", session.user_id)
     return json(
         True,
         user=dict(
@@ -100,25 +117,29 @@ async def del_user(user_id: int):
 
 
 @app.route("/users/<int:user_id>", methods=["GET"])
+@login_required
 async def get_user(user_id: int):
-    print(session.user_id, user_id)
-    assert session.user_id == user_id, "unauthorized"
     user = crud.get_user(user_id)
     assert user, "user not found"
     return json(
         True,
         user=dict(
             name=user.name,
-            email=user.email,
-            id=user.id,
-            cards=[card.dict() for card in user.cards],
+            email=blur_text(user.email, 2, 2),
         ),
     )
 
 
 @app.route("/login", methods=["POST"])
 async def user_login():
-    credentials = schemas.UserCreate(**((await request.get_json()) or {}), name="")
+    try:
+        credentials = schemas.UserCreate(**((await request.get_json()) or {}), name="")
+    except Exception as e:
+        raise AssertionError(e)
+
+    assert credentials.email, "email is required"
+    assert credentials.password, "password is required"
+
     user: schemas.User = crud.get_user_by_email(credentials.email)
     assert user, "user not found"
 
@@ -134,11 +155,8 @@ async def user_login():
     if session.user_id:
         return success_response
     hashed_password = sha256(credentials.password.encode()).hexdigest()
-    print(user.hashed_password)
-    print(hashed_password)
     assert user.hashed_password == hashed_password, "incorrect email or password"
     session.user_id = user.id
-    print("logged user in: ", session.user_id)
     return success_response
 
 
@@ -155,10 +173,22 @@ async def get_user_card(user_id: int, card_id: int):
 @login_required
 async def user_create_card(user_id: int):
     assert session.user_id == user_id, "unauthorized"
-    card = schemas.CardCreate(**((await request.get_json()) or {}))
-    error = validate_req(card)
-    if error:
-        return error
+    try:
+        card = schemas.CardCreate(**((await request.get_json()) or {}))
+    except Exception as e:
+        raise AssertionError(e)
+
+    title = str(card.title)
+    name = str(card.name)
+    provider = str(card.provider)
+    card_number = int(card.card_number)
+    balance = int(card.balance)
+
+    assert name, "name cannot be empty"
+    assert title, "label cannot be empty"
+    assert provider in allowed_providers, "please select a provider"
+    assert card_number, "card numbder cannot be empty"
+
     card: schemas.Card = crud.create_user_card(card, user_id)
     return json(True, card=card.dict())
 
@@ -183,27 +213,23 @@ async def get_user_cards(user_id: int):
 
 @app.errorhandler(AssertionError)
 def assertion_handler(ex):
-    print("assertion error")
     return json(False, msg=str(ex))
 
 
 @app.errorhandler(Unauthorized)
 def unauthorized_handler(ex):
-    print("unauthorized endpoint was accessed")
     return json(False, msg="unauthorized session")
 
 
 @app.errorhandler(Exception)
 def error_handler(ex):
-    print(ex)
-    traceback.print_exc()
     print("an unexpected error has occurred")
+    traceback.print_exc()
     return json(False, msg="error")
 
 
 @app.errorhandler(404)
 def not_found_handler(ex):
-    print("undefined endpoint was accessed")
     return json(False, msg="endpoint not found")
 
 
@@ -217,4 +243,4 @@ loop.add_signal_handler(signal.SIGTERM, _signal_handler)
 try:
     loop.run_until_complete(serve(app, config, shutdown_trigger=shutdown_event.wait))
 except:
-    print("Gracefully shutting down...")
+    print("\r")
